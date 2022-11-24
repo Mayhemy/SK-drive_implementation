@@ -1,6 +1,7 @@
 package drive_impl;
 
 import Exceptions.*;
+import Exceptions.FileNotFoundException;
 import Storage.StorageAndCfg.Cfg;
 import Storage.StorageAndCfg.StorageManager;
 import Storage.StorageAndCfg.StorageSpec;
@@ -13,15 +14,16 @@ import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.json.jackson2.JacksonFactory;
+import com.google.api.client.util.DateTime;
 import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.DriveScopes;
 import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class DriveStorage extends StorageSpec {
@@ -126,6 +128,43 @@ public class DriveStorage extends StorageSpec {
         }
         return id;
     }
+    // Da li ovde treba private?
+    public String getFileIDfromPath(String path){
+        List<String> parents = new ArrayList<>();
+        StringTokenizer tokenizer = new StringTokenizer(path, "\\");
+        while (tokenizer.hasMoreElements()) {
+            parents.add(tokenizer.nextToken());
+        }
+        //let's assume that the path provided is this format C:\\Folder1\\Folder2\\...\\File
+        String folderID = null;
+        int counter = 2;
+        for(String folderName:parents){
+            //We're skipping C:\\
+            if(counter == 2){
+                counter--;
+                continue;
+            }
+            if(counter == 1){
+                counter--;
+                folderID = getID(folderName);
+                continue;
+            }
+            try {
+                FileList containsList = drive.files().list()
+                        .setQ(folderID+" in parent")
+                        .execute();
+                if(!containsList.isEmpty()) {
+                    for (File f : containsList.getFiles()) {
+                        if (f.getName().equals(folderName))
+                            folderID = getID(folderName);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        return folderID;
+    }
     //
     // Implementation of abstract class methods
     @Override
@@ -197,9 +236,26 @@ public class DriveStorage extends StorageSpec {
         // Sve kao prethodna metoda, samo dodati detekciju paterna
     }
 
-    @Override
-    public void loadFiles(String path,String... fileNames) throws FileNotFoundException, MaxStorageSizeException, MaxNumberOfFilesExceededException, UnsupportedOperationException {
 
+
+    @Override
+    public void loadFiles(String path,String... localPaths) throws FileNotFoundException, MaxStorageSizeException, MaxNumberOfFilesExceededException, UnsupportedOperationException {
+        //we need a file/files from a local drive, and also the id of a folder, so we can set their parent ID to that folder's file ID
+
+        String folderID = getFileIDfromPath(path);
+        for (String pth:localPaths){
+            java.io.File filePath = new java.io.File(pth);
+            File fileMetadata = new File();
+            fileMetadata.setName(filePath.getName());
+            fileMetadata.setParents(Collections.singletonList(folderID));
+            try {
+                File file = drive.files().create(fileMetadata)
+                            .setFields("id, parents")
+                            .execute();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     @Override
@@ -292,81 +348,235 @@ public class DriveStorage extends StorageSpec {
 
     @Override
     public void downloadFile(String source, String destination) throws FileNotFoundException, FolderNotFoundException, UnsupportedOperationException {
-
-    }
-
-    @Override
-    public void renameFile(String s, String s1) throws FileNotFoundException, FolderNotFoundException, InvalidNameException, UnsupportedOperationException {
-
-    }
-
-    @Override
-    public Collection<String> retFiles(String dirpath) throws FolderNotFoundException {
-        List<File> files = new ArrayList<File>();
-        Collection<String> stringListOfFiles = new ArrayList<>();
-
-        String fileID = getID(dirpath);
-
+        String fileID = getFileIDfromPath(source);
+        File file;
         try {
-            File searchedFolder = drive.files().get(dirpath).execute();
+            file = drive.files().get(fileID).execute();
         } catch (IOException e) {
             e.printStackTrace();
+            return;
         }
-        FileList result = null;
+        OutputStream outputStream = null;
+        boolean googleDocCheck = false;
         try {
-            result = drive.files().list()
-                    .setQ(fileID+ " in parents")
+            outputStream = new FileOutputStream(currentDriveStorageDirectory.getDownloadFolder() + "/" + file.getName());
+            //System.out.println("Filename  " + fileName);
+        } catch (java.io.FileNotFoundException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    @Override
+    public void renameFile(String path, String fileName) throws FileNotFoundException, FolderNotFoundException, InvalidNameException, UnsupportedOperationException {
+        String fileID = getFileIDfromPath(path);
+        File file = null;
+        try {
+            file = drive.files().get(fileID).execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return;
+        }
+        file.setName(fileName);
+        try {
+            drive.files().update(fileID,file)
                     .execute();
         } catch (IOException e) {
             e.printStackTrace();
         }
-        for (File file : result.getFiles()) {
-            stringListOfFiles.add(file.getId());
-        }
+    }
 
-        return stringListOfFiles;
+
+    @Override
+    public Collection<String> retFiles(String dirpath) throws FolderNotFoundException {
+        String folderID = getFileIDfromPath(dirpath);
+        FileList fileList = null;
+        try {
+            fileList = drive.files().list()
+                    .setQ(folderID+" in parents")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        Collection<String> retFiles = new ArrayList<>();
+        for(File f:fileList.getFiles()){
+            retFiles.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+        }
+        return retFiles;
     }
 
     @Override
-    public Collection<String> retSubdirFiles(String s) throws FolderNotFoundException {
+    public Collection<String> retSubdirFiles(String dirpath) throws FolderNotFoundException {
+        String folderID = getFileIDfromPath(dirpath);
+        FileList subdirList = null;
+        try {
+            subdirList = drive.files().list()
+                        .setQ(folderID+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
+                        .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+        FileList filesInSubFolders;
+        Collection<String> subDirFilesPaths = new ArrayList<>();
+        for(File subFolder:subdirList.getFiles()){
+            try {
+                filesInSubFolders = drive.files().list()
+                                    .setQ(subFolder.getId()+" in parents and "+"mimeType!='application/vnd.google-apps.folder'")
+                                    .execute();
+                for(File f:filesInSubFolders.getFiles()){
+                    subDirFilesPaths.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
         return null;
     }
 
     @Override
     public Collection<String> retDirFilesAndSubdirFiles(String s) throws FolderNotFoundException {
+
+        return null;
+    }
+
+    //TODO figure out how to deal with extensions + Pretraga nad SLKADISTEM, ne zadatim direktorijum => dirpath is reduntandt
+    @Override
+    public Collection<String> retFilesWithExtension(String dirpath, String extension) throws ForbidenExtensionException, FolderNotFoundException {
+        String folderID = getFileIDfromPath(dirpath);
+        Collection<String> filesWithExtention = new ArrayList<>();
+        FileList fileList = null;
+        try {
+            fileList = drive.files().list().execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+        for(File f:fileList.getFiles()){
+            if(f.getFileExtension().equals(extension))
+                filesWithExtention.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+        }
+        return filesWithExtention;
+    }
+
+    //TODO Pretraga nad SLKADISTEM, ne zadatim direktorijum => dirpath is reduntandt
+    @Override
+    public Collection<String> containsString(String dirpath,String substring) throws FolderNotFoundException {
+        String folderID = getFileIDfromPath(dirpath);
+        Collection<String> filesWithSubstring = new ArrayList<>();
+        FileList fileList = null;
+        try {
+            fileList = drive.files().list().execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+        for(File f:fileList.getFiles()){
+            if(f.getName().contains(substring))
+                filesWithSubstring.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+        }
         return null;
     }
 
     @Override
-    public Collection<String> retFilesWithExtension(String s, String s1) throws ForbidenExtensionException, FolderNotFoundException {
+    public boolean containsFiles(String dirPath,String... fileNames) throws FolderNotFoundException {
+        String folderID = getFileIDfromPath(dirPath);
+        Collection<String> fileNamesColelction = Arrays.asList(fileNames);
+        FileList fileList = null;
+        Collection<String> fileListNames = new ArrayList<>();
+        try {
+            fileList = drive.files().list()
+                    .setQ(folderID+" in parents")
+                    .execute();
+            for(File f:fileList.getFiles())
+                fileListNames.add(f.getName());
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
+        return fileListNames.containsAll(fileNamesColelction);
+    }
+
+    @Override
+    public String parentFolderPath(String filePath) throws FileNotFoundException {
+        String fileID = getFileIDfromPath(filePath);
+        File file = null;
+        try {
+            file = drive.files().get(fileID).execute();
+            return file.getParents().toString();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         return null;
     }
 
     @Override
-    public Collection<String> containsString(String s, String s1) throws FolderNotFoundException {
-        return null;
+    public Collection<String> selectByDateCreated(String dirpath,String startDate,String endDate) throws FolderNotFoundException {
+        SimpleDateFormat sampleStartDateTime = new SimpleDateFormat("dd-MM-yyyy;HH:mm:ss");
+        Date startDateDate = null;
+        Date endDateDate = null;
+        try {
+             startDateDate = sampleStartDateTime.parse(startDate);
+             endDateDate = sampleStartDateTime.parse(endDate);
+        } catch (ParseException e) {
+            e.printStackTrace();
+            return null;
+        }
+        String folderID = getFileIDfromPath(dirpath);
+        FileList fileList = null;
+        Collection<String> filesCreatedWithin = new ArrayList<>();
+        try {
+            fileList = drive.files().list()
+                    .setQ(folderID+" in parents")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+
+        for(File f:fileList.getFiles()){
+            Date fdate = new Date(f.getCreatedTime().getValue());
+            if(fdate.after(startDateDate)  && fdate.before(endDateDate)){
+                filesCreatedWithin.add(f.getId());
+            }
+        }
+        return filesCreatedWithin;
     }
 
     @Override
-    public boolean containsFiles(String s, String... strings) throws FolderNotFoundException {
-        return false;
-    }
+    public Collection<String> selectByDateModified(String dirpath, String startDate, String endDate) throws FolderNotFoundException {
+        SimpleDateFormat sampleStartDateTime = new SimpleDateFormat("dd-MM-yyyy;HH:mm:ss");
+        Date startDateDate = null;
+        Date endDateDate = null;
+        try {
+            startDateDate = sampleStartDateTime.parse(startDate);
+            endDateDate = sampleStartDateTime.parse(endDate);
+        } catch (ParseException e) {
+            e.printStackTrace();
+            return null;
+        }
+        String folderID = getFileIDfromPath(dirpath);
+        FileList fileList = null;
+        Collection<String> filesModifiedWithin = new ArrayList<>();
+        try {
+            fileList = drive.files().list()
+                    .setQ(folderID+" in parents")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
 
-    @Override
-    public String parentFolderPath(String s) throws FileNotFoundException {
-        return null;
+        for(File f:fileList.getFiles()){
+            Date fdate = new Date(f.getModifiedTime().getValue());
+            if(fdate.after(startDateDate)  && fdate.before(endDateDate)){
+                filesModifiedWithin.add(f.getId());
+            }
+        }
+        return filesModifiedWithin;
     }
-
-    @Override
-    public Collection<String> selectByDateCreated(String s, String s1, String s2) throws FolderNotFoundException {
-        return null;
-    }
-
-    @Override
-    public Collection<String> selectByDateModified(String s, String s1, String s2) throws FolderNotFoundException {
-        return null;
-    }
-    /* FOR TESTING*/
+    /* FOR TESTING */
     public static void main(String[] args) throws IOException {
 
         Drive service = getDriveService();
