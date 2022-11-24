@@ -349,19 +349,11 @@ public class DriveStorage extends StorageSpec {
     @Override
     public void downloadFile(String source, String destination) throws FileNotFoundException, FolderNotFoundException, UnsupportedOperationException {
         String fileID = getFileIDfromPath(source);
-        File file;
+        OutputStream outputStream = new ByteArrayOutputStream();
         try {
-            file = drive.files().get(fileID).execute();
+            drive.files().get(fileID)
+                    .executeMediaAndDownloadTo(outputStream);
         } catch (IOException e) {
-            e.printStackTrace();
-            return;
-        }
-        OutputStream outputStream = null;
-        boolean googleDocCheck = false;
-        try {
-            outputStream = new FileOutputStream(currentDriveStorageDirectory.getDownloadFolder() + "/" + file.getName());
-            //System.out.println("Filename  " + fileName);
-        } catch (java.io.FileNotFoundException e) {
             e.printStackTrace();
         }
     }
