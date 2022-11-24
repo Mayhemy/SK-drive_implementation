@@ -436,7 +436,50 @@ public class DriveStorage extends StorageSpec {
     }
 
     @Override
-    public Collection<String> retDirFilesAndSubdirFiles(String s) throws FolderNotFoundException {
+    public Collection<String> retDirFilesAndSubdirFiles(String dirpath) throws FolderNotFoundException {
+        String folderID = getFileIDfromPath(dirpath);
+        Collection<String> returningFiles = new ArrayList<>();
+        //Creating a  FileList of subfolders
+        FileList subdirList = null;
+        try {
+            subdirList = drive.files().list()
+                    .setQ(folderID+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+        //Adding the files withing the original folder
+        FileList fileList = null;
+        try {
+            fileList = drive.files().list()
+                    .setQ(folderID+" in parents"+"mimeType!='application/vnd.google-apps.folder'")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        for(File f: fileList.getFiles()){
+            returningFiles.add(f.getId());
+        }
+        FileList subdirFileList = null;
+        for(File folder:subdirList.getFiles()){
+            try {
+                subdirFileList = drive.files().list()
+                        .setQ(folder.getId()+" in parents"+"mimeType!='application/vnd.google-apps.folder'")
+                        .execute();
+                for(File subdirf: subdirFileList.getFiles()){
+                    returningFiles.add(subdirf.getId());
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+
+
+
+
+
 
         return null;
     }
