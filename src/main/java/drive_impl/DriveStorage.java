@@ -114,8 +114,6 @@ public class DriveStorage extends StorageSpec {
         String id = null;
         try{
             result = drive.files().list()
-                    .setPageSize(10)
-                    .setFields("files(id, name,size)")
                     .execute();
         }catch(IOException e) {
             e.printStackTrace();
@@ -130,11 +128,14 @@ public class DriveStorage extends StorageSpec {
     }
     // Da li ovde treba private?
     public String getFileIDfromPath(String path){
+        if(path.equals(".") || path.equals("C:\\")) //<-- added last, not sure if it works
+            return "root";
         List<String> parents = new ArrayList<>();
         StringTokenizer tokenizer = new StringTokenizer(path, "\\");
         while (tokenizer.hasMoreElements()) {
             parents.add(tokenizer.nextToken());
         }
+        System.out.println(parents.toString());
         //let's assume that the path provided is this format C:\\Folder1\\Folder2\\...\\File
         String folderID = null;
         int counter = 2;
@@ -146,25 +147,66 @@ public class DriveStorage extends StorageSpec {
             }
             if(counter == 1){
                 counter--;
+                System.out.println(folderID);
                 folderID = getID(folderName);
+                System.out.println(folderID);
                 continue;
             }
             try {
+                System.out.println(folderName);
+                System.out.println(folderID);
+                System.out.println("Pre");
                 FileList containsList = drive.files().list()
-                        .setQ(folderID+" in parent")
+                        .setQ("'"+folderID+"'"+" in parents")
                         .execute();
+                System.out.println("Post");
                 if(!containsList.isEmpty()) {
                     for (File f : containsList.getFiles()) {
                         if (f.getName().equals(folderName))
-                            folderID = getID(folderName);
+                            folderID = f.getId();
                     }
                 }
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
+        System.out.println(folderID);
         return folderID;
     }
+    public Collection<String> findAllSubfiles(Collection<String> allSubfiles, String folderID) throws IOException {
+        FileList fileList = null;
+        fileList = drive.files().list()
+                .setQ("'"+folderID+"'"+" in parents")
+                .execute();
+        for(File f:fileList.getFiles()){
+            if(!f.getMimeType().equalsIgnoreCase("application/vnd.google-apps.folder"))
+                allSubfiles.add("Name: "+f.getName()+";ID: "+f.getId());
+        }
+        for(File f:fileList.getFiles()){
+            if(f.getMimeType().equalsIgnoreCase("application/vnd.google-apps.folder"))
+                allSubfiles = findAllSubfiles(allSubfiles,f.getId());
+        }
+        return allSubfiles;
+    }
+
+    public boolean checkIfInStorage(String dirpath) throws IOException {
+        String fileID = getFileIDfromPath(dirpath);
+        File file = drive.files().get(fileID).execute();
+        Collection<String> storageFiles = new ArrayList<>();
+        storageFiles = findAllSubfiles(storageFiles,dirpath);
+        if(storageFiles.contains("Name: "+file.getName()+";ID: "+file.getId()))
+            return true;
+        return false;
+    }
+    public boolean checkIfParent(String dirpath,String fileID) throws IOException {;
+        File file = drive.files().get(fileID).execute();
+        Collection<String> storageFiles = new ArrayList<>();
+        storageFiles = findAllSubfiles(storageFiles,dirpath);
+        if(storageFiles.contains("Name: "+file.getName()+";ID: "+file.getId()))
+            return true;
+        return false;
+    }
+
     //
     // Implementation of abstract class methods
     @Override
@@ -173,26 +215,42 @@ public class DriveStorage extends StorageSpec {
     }
 
     @Override
-    public void createStorage(String rootName) throws FolderNotFoundException {
+    public void createStorage(String pathToFolder, String folderName) throws FolderNotFoundException {
         try {
             drive = getDriveService();
         } catch (IOException e) {
             e.printStackTrace();
         }
+        String holdingFolderID = getFileIDfromPath(pathToFolder);
+        System.out.println("Hope this is the correct ID: "+holdingFolderID);
+        try {
+            File testFile = drive.files().get(holdingFolderID).execute();
+            System.out.println("Name of this ID: "+testFile.getName());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         File fileMetadata = new File();
-        fileMetadata.setName(rootName);
+        fileMetadata.setName(folderName);
         fileMetadata.setMimeType("application/vnd.google-apps.folder");
         fileMetadata.setDescription("Implemented Drive Storage");
+        fileMetadata.setParents(Collections.singletonList(holdingFolderID));
+
         try {
             File file = drive.files().create(fileMetadata)
-                    .setFields("id")
+                    .setFields("id, parents, name, mimeType")
                     .execute();
             System.out.println("Folder ID: " + file.getId());
             currentDriveStorageDirectory = new DriveStorageDirectory();
             currentDriveStorageDirectory.setRootID(file.getId());
-            //currentDriveStorageDirectory.setRoot(); // <-- need to set root properly
+            currentDriveStorageDirectory.setRoot(file.getName());
             String downloadsDir = System.getProperty("user.home")+"/Downloads/";
             currentDriveStorageDirectory.setDownloadFolder(downloadsDir);
+            FileList filelist = drive.files().list()
+                    .setQ("'"+holdingFolderID+"'"+" in parents")
+                    .execute();
+            System.out.println("All the files and folders in :"+holdingFolderID+" ID");
+            for(File f:filelist.getFiles())
+                System.out.println(f.getName());
         } catch (GoogleJsonResponseException e) {
             // TODO(developer) - handle error appropriately
             System.err.println("Unable to create folder: " + e.getDetails());
@@ -200,17 +258,18 @@ public class DriveStorage extends StorageSpec {
             e.printStackTrace();
         }
         System.out.println("Storage Created at "+ currentDriveStorageDirectory.getRoot()); // <-- Root still needs to be set
+        System.out.println("Storage Created at "+ currentDriveStorageDirectory.getRootID()); // <-- Root still needs to be set
     }
 
     //implement later when cfg is understood
     @Override
-    public void createStorage(String rootName, String config) throws FileNotFoundException {
+    public void createStorage(String pathToFolder, String folderName, String configLocation) throws FileNotFoundException {
 
     }
 
     @Override
     public void createDirectories(String path, String... dirNames) throws FolderNotFoundException, UnsupportedOperationException {
-        String folderID = getID(path);
+        String folderID = getFileIDfromPath(path);
         if(folderID == null)
             throw new FolderNotFoundException();
         for(String s : dirNames){
@@ -259,10 +318,10 @@ public class DriveStorage extends StorageSpec {
     }
 
     @Override
-    public void deleteFiles(String... files) throws FileNotFoundException, UnsupportedOperationException {
+    public void deleteFiles(String... filePaths) throws FileNotFoundException, UnsupportedOperationException {
         String fileID;
-        for (String s : files) {
-            fileID = getID(s);
+        for (String s : filePaths) {
+            fileID = getFileIDfromPath(s);
             File fileMetadata = null;
             try {
                 fileMetadata = drive.files().get(fileID).execute();
@@ -272,7 +331,7 @@ public class DriveStorage extends StorageSpec {
 
             if(!fileMetadata.getMimeType().equalsIgnoreCase("application/vnd.google-apps.folder")) {
                 try {
-                    drive.files().delete(fileID);
+                    drive.files().delete(fileID).execute();
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
@@ -280,10 +339,10 @@ public class DriveStorage extends StorageSpec {
         }
     }
     @Override
-    public void deleteDirectories(String... folders) throws FolderNotFoundException, UnsupportedOperationException {
+    public void deleteDirectories(String... folderPaths) throws FolderNotFoundException, UnsupportedOperationException {
         String fileID;
-        for (String s : folders) {
-            fileID = getID(s);
+        for (String s : folderPaths) {
+            fileID = getFileIDfromPath(s);
             File fileMetadata = null;
             try {
                 fileMetadata = drive.files().get(fileID).execute();
@@ -293,7 +352,7 @@ public class DriveStorage extends StorageSpec {
 
             if(fileMetadata.getMimeType().equalsIgnoreCase("application/vnd.google-apps.folder")) {
                 try {
-                    drive.files().delete(fileID);
+                    drive.files().delete(fileID).execute();
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
@@ -303,7 +362,7 @@ public class DriveStorage extends StorageSpec {
 
     @Override
     public void moveFile(String source, String destination) throws FileNotFoundException, FolderNotFoundException, MaxStorageSizeException, MaxNumberOfFilesExceededException, UnsupportedOperationException {
-        String destFolderID = getID(destination);
+        String destFolderID = getFileIDfromPath(destination);
         if(destFolderID == null){
             throw new FolderNotFoundException();
         }
@@ -317,43 +376,62 @@ public class DriveStorage extends StorageSpec {
             throw new FolderNotFoundException();
         }
         List<String> fileList = destFolder.getSpaces();
-        if(currentDriveStorageDirectory.isMaxNumberOfFilesSet()){
-            if(currentDriveStorageDirectory.getMaxNumberOfFiles() < fileList.size()){
-                String sourceFileID = getID(source);
-                File fileMetadata = null;
-                try {
-                    fileMetadata = drive.files().get(sourceFileID).setFields("parents").execute();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-                StringBuilder previousParents = new StringBuilder();
-                for (String parent : fileMetadata.getParents()) {
-                    previousParents.append(parent);
-                    previousParents.append(',');
-                }
-                try {
-                    fileMetadata = drive.files().update(sourceFileID, null)
-                            .setAddParents(destFolderID)
-                            .setRemoveParents(previousParents.toString())
-                            .setFields("id, parents, mimeType")
-                            .execute();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }else{
+        if(currentDriveStorageDirectory.isMaxNumberOfFilesSet()) {
+            if (currentDriveStorageDirectory.getMaxNumberOfFiles() < fileList.size()) {
                 throw new MaxNumberOfFilesExceededException();
             }
         }
+        String sourceFileID = getFileIDfromPath(source);
+        File fileMetadata = null;
+        try {
+            fileMetadata = drive.files().get(sourceFileID).setFields("parents").execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        StringBuilder previousParents = new StringBuilder();
+        for (String parent : fileMetadata.getParents()) {
+            previousParents.append(parent);
+            previousParents.append(',');
+        }
+        try {
+            fileMetadata = drive.files().update(sourceFileID, null)
+                    .setAddParents(destFolderID)
+                    .setRemoveParents(previousParents.toString())
+                    .setFields("id, parents, mimeType")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
-    //TODO destination String not used
+    //TODO destination String not used | Slight error when downloading an empty file
     @Override
     public void downloadFile(String source, String destination) throws FileNotFoundException, FolderNotFoundException, UnsupportedOperationException {
         String fileID = getFileIDfromPath(source);
-        OutputStream outputStream = new ByteArrayOutputStream();
+        System.out.println("File ID of downloaded file is: "+fileID);
+        String fileName = null;
+        try {
+            fileName = drive.files().get(fileID).execute().getName();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        //OutputStream outputStream = new ByteArrayOutputStream();
+        OutputStream outputStream = null;
+        try {
+            outputStream = new FileOutputStream(currentDriveStorageDirectory.getDownloadFolder()+"/"+fileName);
+        } catch (java.io.FileNotFoundException e) {
+            e.printStackTrace();
+        }
         try {
             drive.files().get(fileID)
                     .executeMediaAndDownloadTo(outputStream);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        try {
+            assert outputStream != null;
+            outputStream.flush();
+            outputStream.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -363,30 +441,33 @@ public class DriveStorage extends StorageSpec {
     @Override
     public void renameFile(String path, String fileName) throws FileNotFoundException, FolderNotFoundException, InvalidNameException, UnsupportedOperationException {
         String fileID = getFileIDfromPath(path);
-        File file = null;
-        try {
+        File filemetadata = new File();
+       /* try {
             file = drive.files().get(fileID).execute();
         } catch (IOException e) {
             e.printStackTrace();
             return;
-        }
-        file.setName(fileName);
+        }*/
+        filemetadata.setName(fileName);
         try {
-            drive.files().update(fileID,file)
+            drive.files().update(fileID,filemetadata)
+                    .setFields("name")
                     .execute();
+
         } catch (IOException e) {
             e.printStackTrace();
         }
+
     }
 
 
     @Override
     public Collection<String> retFiles(String dirpath) throws FolderNotFoundException {
-        String folderID = getFileIDfromPath(dirpath);
+        /*String folderID = getFileIDfromPath(dirpath);
         FileList fileList = null;
         try {
             fileList = drive.files().list()
-                    .setQ(folderID+" in parents")
+                    .setQ("'"+folderID+"'"+" in parents")
                     .execute();
         } catch (IOException e) {
             e.printStackTrace();
@@ -394,17 +475,71 @@ public class DriveStorage extends StorageSpec {
         Collection<String> retFiles = new ArrayList<>();
         for(File f:fileList.getFiles()){
             retFiles.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+        }*/
+        //TODO Just subfiles of this directory
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        String folderID = getFileIDfromPath(dirpath);
+        Collection<String> retFiles = new ArrayList<>();
+        FileList fileList = null;
+        try {
+            drive.files().list().setQ("'"+folderID+"'"+" in parents").execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        for(File f:fileList.getFiles()){
+            retFiles.add("Name: "+f.getName()+";ID: "+f.getId());
         }
         return retFiles;
     }
 
     @Override
     public Collection<String> retSubdirFiles(String dirpath) throws FolderNotFoundException {
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        Collection<String> retSubdirFiles = new ArrayList<>();
+
+        String folderID = getFileIDfromPath(dirpath);
+        FileList folderList = null;
+        try {
+            folderList = drive.files().list()
+                        .setQ("'"+folderID+"'"+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
+                        .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        for(File folders:folderList.getFiles()){
+            try {
+                retSubdirFiles = findAllSubfiles(retSubdirFiles,dirpath+"\\"+folders.getName());
+            } catch (IOException e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+        return retSubdirFiles;
+       /* try {
+            retSubdirFiles = findAllSubfiles(retSubdirFiles,dirpath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return retSubdirFiles;
         String folderID = getFileIDfromPath(dirpath);
         FileList subdirList = null;
         try {
             subdirList = drive.files().list()
-                        .setQ(folderID+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
+                        .setQ("'"+folderID+"'"+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
                         .execute();
         } catch (IOException e) {
             e.printStackTrace();
@@ -415,7 +550,7 @@ public class DriveStorage extends StorageSpec {
         for(File subFolder:subdirList.getFiles()){
             try {
                 filesInSubFolders = drive.files().list()
-                                    .setQ(subFolder.getId()+" in parents and "+"mimeType!='application/vnd.google-apps.folder'")
+                                    .setQ("'"+subFolder.getId()+"'"+" in parents and "+"mimeType!='application/vnd.google-apps.folder'")
                                     .execute();
                 for(File f:filesInSubFolders.getFiles()){
                     subDirFilesPaths.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
@@ -425,18 +560,33 @@ public class DriveStorage extends StorageSpec {
                 return null;
             }
         }
-        return null;
+        return null;*/
     }
 
     @Override
     public Collection<String> retDirFilesAndSubdirFiles(String dirpath) throws FolderNotFoundException {
-        String folderID = getFileIDfromPath(dirpath);
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        Collection<String> retFiles = new ArrayList<>();
+        try {
+            retFiles = findAllSubfiles(retFiles,dirpath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return retFiles;
+        /*String folderID = getFileIDfromPath(dirpath);
         Collection<String> returningFiles = new ArrayList<>();
         //Creating a  FileList of subfolders
         FileList subdirList = null;
         try {
             subdirList = drive.files().list()
-                    .setQ(folderID+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
+                    .setQ("'"+folderID+"'"+" in parents and "+"mimeType='application/vnd.google-apps.folder'")
                     .execute();
         } catch (IOException e) {
             e.printStackTrace();
@@ -446,7 +596,7 @@ public class DriveStorage extends StorageSpec {
         FileList fileList = null;
         try {
             fileList = drive.files().list()
-                    .setQ(folderID+" in parents"+"mimeType!='application/vnd.google-apps.folder'")
+                    .setQ("'"+folderID+"'"+" in parents"+"mimeType!='application/vnd.google-apps.folder'")
                     .execute();
         } catch (IOException e) {
             e.printStackTrace();
@@ -458,7 +608,7 @@ public class DriveStorage extends StorageSpec {
         for(File folder:subdirList.getFiles()){
             try {
                 subdirFileList = drive.files().list()
-                        .setQ(folder.getId()+" in parents"+"mimeType!='application/vnd.google-apps.folder'")
+                        .setQ("'"+folder.getId()+"'"+" in parents"+"mimeType!='application/vnd.google-apps.folder'")
                         .execute();
                 for(File subdirf: subdirFileList.getFiles()){
                     returningFiles.add(subdirf.getId());
@@ -468,20 +618,27 @@ public class DriveStorage extends StorageSpec {
                 return null;
             }
         }
-
-
-
-
-
-
-        return null;
+        return null;*/
     }
 
-    //TODO figure out how to deal with extensions + Pretraga nad SLKADISTEM, ne zadatim direktorijum => dirpath is reduntandt
+    //NOTE dirpath is the path to Storage
     @Override
     public Collection<String> retFilesWithExtension(String dirpath, String extension) throws ForbidenExtensionException, FolderNotFoundException {
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         String folderID = getFileIDfromPath(dirpath);
         Collection<String> filesWithExtention = new ArrayList<>();
+        try {
+            filesWithExtention = findAllSubfiles(filesWithExtention,dirpath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         FileList fileList = null;
         try {
             fileList = drive.files().list().execute();
@@ -490,8 +647,14 @@ public class DriveStorage extends StorageSpec {
             return null;
         }
         for(File f:fileList.getFiles()){
-            if(f.getFileExtension().equals(extension))
-                filesWithExtention.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+            try {
+                if(f.getFileExtension().equals(extension) && checkIfParent(dirpath,f.getId()))
+                    filesWithExtention.add("Name: "+f.getName()+";ID: "+f.getId());
+            } catch (IOException e) {
+                e.printStackTrace();
+                return null;
+            }
+            //filesWithExtention.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
         }
         return filesWithExtention;
     }
@@ -499,8 +662,22 @@ public class DriveStorage extends StorageSpec {
     //TODO Pretraga nad SLKADISTEM, ne zadatim direktorijum => dirpath is reduntandt
     @Override
     public Collection<String> containsString(String dirpath,String substring) throws FolderNotFoundException {
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         String folderID = getFileIDfromPath(dirpath);
         Collection<String> filesWithSubstring = new ArrayList<>();
+        Collection<String> allStorageFiles = new ArrayList<>();
+        try {
+            allStorageFiles = findAllSubfiles(allStorageFiles,dirpath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         FileList fileList = null;
         try {
             fileList = drive.files().list().execute();
@@ -509,21 +686,31 @@ public class DriveStorage extends StorageSpec {
             return null;
         }
         for(File f:fileList.getFiles()){
-            if(f.getName().contains(substring))
-                filesWithSubstring.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+            if(f.getName().contains(substring) && allStorageFiles.contains("Name: "+f.getName()+";ID: "+f.getId()))
+                filesWithSubstring.add("Name: "+f.getName()+";ID: "+f.getId());
+                //filesWithSubstring.add("Name: "+f.getName()+"\nID:"+f.getId()+"MimeType: "+f.getMimeType()+"\nSize: "+f.getSize()+"\nMimeType: "+f.getMimeType()+"\n");
+
         }
         return null;
     }
 
     @Override
     public boolean containsFiles(String dirPath,String... fileNames) throws FolderNotFoundException {
+        try {
+            if(!checkIfInStorage(dirPath)){
+                System.out.println("Path outside of Storage");
+                return false;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         String folderID = getFileIDfromPath(dirPath);
         Collection<String> fileNamesColelction = Arrays.asList(fileNames);
         FileList fileList = null;
         Collection<String> fileListNames = new ArrayList<>();
         try {
             fileList = drive.files().list()
-                    .setQ(folderID+" in parents")
+                    .setQ("'"+folderID+"'"+" in parents")
                     .execute();
             for(File f:fileList.getFiles())
                 fileListNames.add(f.getName());
@@ -536,6 +723,14 @@ public class DriveStorage extends StorageSpec {
 
     @Override
     public String parentFolderPath(String filePath) throws FileNotFoundException {
+        try {
+            if(!checkIfInStorage(filePath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         String fileID = getFileIDfromPath(filePath);
         File file = null;
         try {
@@ -549,6 +744,21 @@ public class DriveStorage extends StorageSpec {
 
     @Override
     public Collection<String> selectByDateCreated(String dirpath,String startDate,String endDate) throws FolderNotFoundException {
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        String folderID = getFileIDfromPath(dirpath);
+        Collection<String> allSubfiles = new ArrayList<>();
+        try {
+            allSubfiles = findAllSubfiles(allSubfiles,folderID);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         SimpleDateFormat sampleStartDateTime = new SimpleDateFormat("dd-MM-yyyy;HH:mm:ss");
         Date startDateDate = null;
         Date endDateDate = null;
@@ -559,12 +769,11 @@ public class DriveStorage extends StorageSpec {
             e.printStackTrace();
             return null;
         }
-        String folderID = getFileIDfromPath(dirpath);
         FileList fileList = null;
         Collection<String> filesCreatedWithin = new ArrayList<>();
         try {
             fileList = drive.files().list()
-                    .setQ(folderID+" in parents")
+                    .setQ("'"+folderID+"'"+" in parents")
                     .execute();
         } catch (IOException e) {
             e.printStackTrace();
@@ -573,7 +782,7 @@ public class DriveStorage extends StorageSpec {
 
         for(File f:fileList.getFiles()){
             Date fdate = new Date(f.getCreatedTime().getValue());
-            if(fdate.after(startDateDate)  && fdate.before(endDateDate)){
+            if(fdate.after(startDateDate)  && fdate.before(endDateDate) && allSubfiles.contains("Name: "+f.getName()+";ID: "+f.getId())){
                 filesCreatedWithin.add(f.getId());
             }
         }
@@ -582,6 +791,57 @@ public class DriveStorage extends StorageSpec {
 
     @Override
     public Collection<String> selectByDateModified(String dirpath, String startDate, String endDate) throws FolderNotFoundException {
+        try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        String folderID = getFileIDfromPath(dirpath);
+        Collection<String> allSubfiles = new ArrayList<>();
+        try {
+            allSubfiles = findAllSubfiles(allSubfiles,folderID);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        SimpleDateFormat sampleStartDateTime = new SimpleDateFormat("dd-MM-yyyy;HH:mm:ss");
+        Date startDateDate = null;
+        Date endDateDate = null;
+        try {
+            startDateDate = sampleStartDateTime.parse(startDate);
+            endDateDate = sampleStartDateTime.parse(endDate);
+        } catch (ParseException e) {
+            e.printStackTrace();
+            return null;
+        }
+        FileList fileList = null;
+        Collection<String> filesModifiedWithin = new ArrayList<>();
+        try {
+            fileList = drive.files().list()
+                    .setQ("'"+folderID+"'"+" in parents")
+                    .execute();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+
+        for(File f:fileList.getFiles()){
+            Date fdate = new Date(f.getModifiedTime().getValue());
+            if(fdate.after(startDateDate)  && fdate.before(endDateDate) && allSubfiles.contains("Name: "+f.getName()+";ID: "+f.getId())){
+                filesModifiedWithin.add(f.getId());
+            }
+        }
+        return filesModifiedWithin;
+        /*try {
+            if(!checkIfInStorage(dirpath)){
+                System.out.println("Path outside of Storage");
+                return null;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         SimpleDateFormat sampleStartDateTime = new SimpleDateFormat("dd-MM-yyyy;HH:mm:ss");
         Date startDateDate = null;
         Date endDateDate = null;
@@ -597,7 +857,7 @@ public class DriveStorage extends StorageSpec {
         Collection<String> filesModifiedWithin = new ArrayList<>();
         try {
             fileList = drive.files().list()
-                    .setQ(folderID+" in parents")
+                    .setQ("'"+folderID+"'"+" in parents")
                     .execute();
         } catch (IOException e) {
             e.printStackTrace();
@@ -610,7 +870,7 @@ public class DriveStorage extends StorageSpec {
                 filesModifiedWithin.add(f.getId());
             }
         }
-        return filesModifiedWithin;
+        return filesModifiedWithin;*/
     }
     /* FOR TESTING */
     public static void main(String[] args) throws IOException {
